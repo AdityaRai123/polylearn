@@ -7,7 +7,7 @@ const { sequelize, User, UserStats, UserProgress, Language, Unit, Lesson, Questi
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
-const seedDatabase = async () => {
+const seedDatabase = async (forceSync = true) => {
   try {
     if (process.env.DB_DIALECT !== 'sqlite') {
       console.log('Ensuring database exists...');
@@ -28,10 +28,14 @@ const seedDatabase = async () => {
     await sequelize.authenticate();
     console.log('Database connected.');
 
-    // Force sync drops all tables and recreates them
-    console.log('Resetting tables...');
-    await sequelize.sync({ force: true });
-    console.log('Tables reset.');
+    if (forceSync) {
+      // Force sync drops all tables and recreates them
+      console.log('Resetting tables...');
+      await sequelize.sync({ force: true });
+      console.log('Tables reset.');
+    } else {
+      await sequelize.sync({ alter: false });
+    }
 
     // 1. Seed Languages
     console.log('Seeding languages...');
@@ -214,15 +218,14 @@ const seedDatabase = async () => {
       passwordHash: passHash
     });
 
-    const studentStats = await UserStats.create({
+    await UserStats.create({
       userId: student.id,
       xp: 45,
       streakCount: 3,
-      lastActiveDate: new Date().toISOString().split('T')[0], // Active today
+      lastActiveDate: new Date().toISOString().split('T')[0],
       hearts: 4
     });
 
-    // Seed progress: completed Spanish Lesson 1
     await UserProgress.create({
       userId: student.id,
       lessonId: esLesson1.id,
@@ -244,7 +247,6 @@ const seedDatabase = async () => {
       hearts: 5
     });
 
-    // Add another top user for the leaderboard to look realistic
     const topUser = await User.create({
       name: 'Polyglot Guru',
       email: 'guru@polylearn.com',
@@ -282,12 +284,30 @@ const seedDatabase = async () => {
     await UserProgress.create({ userId: secondUser.id, lessonId: esLesson2.id, score: 90 });
 
     console.log('Seeding completed successfully!');
-    process.exit(0);
-
   } catch (err) {
     console.error('Seeding failed:', err);
-    process.exit(1);
+    throw err;
   }
 };
 
-seedDatabase();
+const autoSeedIfEmpty = async () => {
+  try {
+    const count = await Language.count();
+    if (count === 0) {
+      console.log('Database is empty. Running auto-seeder for initial content...');
+      await seedDatabase(false);
+      console.log('Auto-seeding completed.');
+    }
+  } catch (err) {
+    console.error('Auto-seed check failed:', err);
+  }
+};
+
+if (require.main === module) {
+  seedDatabase(true)
+    .then(() => process.exit(0))
+    .catch(() => process.exit(1));
+}
+
+module.exports = { seedDatabase, autoSeedIfEmpty };
+

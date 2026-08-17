@@ -100,3 +100,37 @@ Click the prefill buttons on the login screen or enter manually:
 
    - **Email**: `demo@polylearn.com`
    - **Password**: `demo123`
+
+---
+
+## Deployment (Hosting on Render & Netlify)
+
+### 1. Deploy Backend to **Render**
+
+1. Sign in to [Render.com](https://render.com) and create a **New Web Service** (or Blueprints, using `render.yaml`).
+2. Connect your **PolyLearn** repository.
+3. Configure the web service settings:
+   - **Root Directory**: `server`
+   - **Build Command**: `npm install`
+   - **Start Command**: `npm start`
+4. Add the following **Environment Variables** in Render settings:
+   - `NODE_ENV`: `production`
+   - `DB_DIALECT`: `sqlite` (or provide external MySQL credentials `DB_HOST`, `DB_USER`, `DB_PASS`, `DB_NAME`)
+   - `JWT_SECRET`: `your_secure_random_jwt_secret_here`
+   - `CLIENT_URL`: `https://<your-netlify-app-name>.netlify.app`
+5. Click **Deploy Web Service**. Once deployed, copy your Render API URL (e.g., `https://polylearn-backend.onrender.com`).
+
+---
+
+### 2. Deploy Frontend to **Netlify**
+
+1. Sign in to [Netlify.com](https://netlify.com) and click **Add new site** > **Import an existing project**.
+2. Connect your GitHub repository and select the **PolyLearn** project.
+3. Configure build settings:
+   - **Base directory**: `client`
+   - **Build command**: `npm run build`
+   - **Publish directory**: `client/dist` (or `dist`)
+4. In **Environment variables**, add:
+   - `VITE_API_URL`: `https://<your-render-backend-name>.onrender.com` (Your Render Backend URL)
+5. Click **Deploy Site**. Netlify will build the site and deploy your frontend.
+

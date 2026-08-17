@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: polylearn-backend
+    env: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_DIALECT
+        value: sqlite
+      - key: JWT_SECRET
+        generateValue: true
