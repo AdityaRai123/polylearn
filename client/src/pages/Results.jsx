@@ -1,77 +1,57 @@
-import React from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Flame, Heart, HeartCrack, Star, Target, Trophy } from 'lucide-react';
 
 const Results = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { lessonTitle, results, wasFailed } = location.state || {};
 
-  const state = location.state || {};
-  const { lessonTitle, results, wasFailed } = state;
-
-  // Fallback in case someone directly navigates to /results
+  // Reached directly (e.g. page refresh) — nothing to show
   if (!results) {
-    return (
-      <div className="results-fallback-container">
-        <h2>No lesson records found.</h2>
-        <button onClick={() => navigate('/')} className="btn-primary">Go to Dashboard</button>
-      </div>
-    );
+    return <Navigate to="/" replace />;
   }
 
   const { score, correctCount, totalQuestions, xpGained, heartsLeft, streakCount } = results;
 
+  const metrics = [
+    { icon: Target, value: `${score}%`, label: 'Accuracy', tone: 'brand' },
+    { icon: Star, value: `+${xpGained}`, label: 'XP gained', tone: 'gold' },
+    { icon: Flame, value: streakCount, label: 'Day streak', tone: 'gold' },
+    { icon: Heart, value: `${heartsLeft}/5`, label: 'Hearts left', tone: 'heart' },
+  ];
+
   return (
-    <div className={`results-page-container ${wasFailed ? 'failed-theme' : 'success-theme'}`}>
-      <div className="results-card">
-        {wasFailed ? (
-          <div className="results-illustration failed">
-            <span className="emoji-illustration">💔</span>
-            <h1>No Hearts Left!</h1>
-            <p>You ran out of lives during the lesson "{lessonTitle}". Keep practicing and try again!</p>
-          </div>
-        ) : (
-          <div className="results-illustration success">
-            <span className="emoji-illustration">🏆</span>
-            <h1>Lesson Completed!</h1>
-            <p>Fantastic job! You've successfully finished the lesson "{lessonTitle}".</p>
-          </div>
-        )}
-
-        <div className="results-stats-row">
-          <div className="result-metric-card accuracy">
-            <span className="metric-icon">🎯</span>
-            <span className="metric-value">{score}%</span>
-            <span className="metric-label">Accuracy</span>
-          </div>
-
-          <div className="result-metric-card xp-earned">
-            <span className="metric-icon">⭐</span>
-            <span className="metric-value">+{xpGained}</span>
-            <span className="metric-label">XP Gained</span>
-          </div>
-
-          <div className="result-metric-card streak-updated">
-            <span className="metric-icon">🔥</span>
-            <span className="metric-value">{streakCount}</span>
-            <span className="metric-label">Day Streak</span>
-          </div>
-
-          <div className="result-metric-card hearts-remaining">
-            <span className="metric-icon">❤️</span>
-            <span className="metric-value">{heartsLeft} / 5</span>
-            <span className="metric-label">Hearts Left</span>
-          </div>
+    <div className="result-page">
+      <div className="card result-card">
+        <div className={`result-hero ${wasFailed ? 'is-failed' : 'is-success'}`}>
+          <span className="result-hero-icon" aria-hidden="true">
+            {wasFailed ? <HeartCrack size={36} /> : <Trophy size={36} />}
+          </span>
+          <h1>{wasFailed ? 'Out of hearts' : 'Lesson complete!'}</h1>
+          <p className="text-muted">
+            {wasFailed
+              ? `You ran out of hearts during "${lessonTitle}". Practice makes perfect — try again!`
+              : `Great work finishing "${lessonTitle}".`}
+          </p>
         </div>
 
-        <div className="results-summary-text">
-          <p>You answered <strong>{correctCount}</strong> out of <strong>{totalQuestions}</strong> questions correctly.</p>
+        <div className="metric-grid">
+          {metrics.map(({ icon: Icon, value, label, tone }) => (
+            <div key={label} className={`stat-tile tone-${tone}`}>
+              <Icon size={20} aria-hidden="true" />
+              <strong>{value}</strong>
+              <span>{label}</span>
+            </div>
+          ))}
         </div>
 
-        <div className="results-actions">
-          <button onClick={() => navigate('/')} className="btn-primary btn-results-finish">
-            {wasFailed ? 'Back to Dashboard' : 'Continue to Dashboard'}
-          </button>
-        </div>
+        <p className="text-center text-muted">
+          You answered <strong>{correctCount}</strong> of <strong>{totalQuestions}</strong> questions correctly.
+        </p>
+
+        <button type="button" className="btn btn-primary btn-lg btn-block" onClick={() => navigate('/')}>
+          Back to dashboard
+        </button>
       </div>
     </div>
   );

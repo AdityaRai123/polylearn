@@ -6,6 +6,9 @@ const Lesson = require('./lesson');
 const Question = require('./question');
 const UserProgress = require('./userProgress');
 const UserStats = require('./userStats');
+const Test = require('./test');
+const TestQuestion = require('./testQuestion');
+const TestAttempt = require('./testAttempt');
 
 // Associations
 
@@ -33,6 +36,22 @@ Question.belongsTo(Lesson, { foreignKey: 'lessonId', as: 'lesson' });
 Lesson.hasMany(UserProgress, { foreignKey: 'lessonId', as: 'progress', onDelete: 'CASCADE' });
 UserProgress.belongsTo(Lesson, { foreignKey: 'lessonId', as: 'lesson' });
 
+// Teacher (User) <-> Test (One-to-Many)
+User.hasMany(Test, { foreignKey: 'teacherId', as: 'tests', onDelete: 'CASCADE' });
+Test.belongsTo(User, { foreignKey: 'teacherId', as: 'teacher' });
+
+// Test <-> TestQuestion (One-to-Many)
+Test.hasMany(TestQuestion, { foreignKey: 'testId', as: 'questions', onDelete: 'CASCADE' });
+TestQuestion.belongsTo(Test, { foreignKey: 'testId', as: 'test' });
+
+// Test <-> TestAttempt (One-to-Many)
+Test.hasMany(TestAttempt, { foreignKey: 'testId', as: 'attempts', onDelete: 'CASCADE' });
+TestAttempt.belongsTo(Test, { foreignKey: 'testId', as: 'test' });
+
+// Student (User) <-> TestAttempt (One-to-Many)
+User.hasMany(TestAttempt, { foreignKey: 'userId', as: 'testAttempts', onDelete: 'CASCADE' });
+TestAttempt.belongsTo(User, { foreignKey: 'userId', as: 'student' });
+
 module.exports = {
   sequelize,
   User,
@@ -41,5 +60,8 @@ module.exports = {
   Lesson,
   Question,
   UserProgress,
-  UserStats
+  UserStats,
+  Test,
+  TestQuestion,
+  TestAttempt
 };

@@ -1,276 +1,249 @@
-import React, { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { courseAPI, userAPI } from '../services/api';
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { CheckCircle2, Heart, X, XCircle } from 'lucide-react';
+import { ConfirmDialog, EmptyState, ErrorState, LoadingScreen, ProgressBar, Spinner } from '../components/ui';
+import { courseAPI, getErrorMessage, userAPI } from '../services/api';
 
 const Lesson = () => {
   const { id: lessonId } = useParams();
   const navigate = useNavigate();
 
   const [lesson, setLesson] = useState(null);
-  const [questions, setQuestions] = useState([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  // Question state
-  const [selectedOption, setSelectedOption] = useState('');
-  const [typedAnswer, setTypedAnswer] = useState('');
-  const [isChecked, setIsChecked] = useState(false);
-  const [isCorrect, setIsCorrect] = useState(false);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [answer, setAnswer] = useState('');
+  const [feedback, setFeedback] = useState(null); // { correct, correctAnswer } once checked
+  const [checking, setChecking] = useState(false);
+  const [actionError, setActionError] = useState('');
 
-  // Lesson performance
   const [submittedAnswers, setSubmittedAnswers] = useState([]);
-  const [localHearts, setLocalHearts] = useState(5);
+  const [hearts, setHearts] = useState(5);
   const [submitting, setSubmitting] = useState(false);
+  const [confirmQuit, setConfirmQuit] = useState(false);
 
   useEffect(() => {
-    const fetchQuestions = async () => {
-      try {
-        setLoading(true);
-        const res = await courseAPI.getLessonQuestions(lessonId);
-        setLesson(res.data);
-        setQuestions(res.data.questions || []);
-        
-        // Fetch current user stats to match hearts count
-        const dashRes = await userAPI.getDashboard();
-        setLocalHearts(dashRes.data.stats.hearts);
-      } catch (err) {
-        console.error(err);
-        setError('Failed to load lesson questions. Please try again.');
-      } finally {
-        setLoading(false);
-      }
+    let cancelled = false;
+    Promise.all([courseAPI.getLessonQuestions(lessonId), userAPI.getDashboard()])
+      .then(([lessonRes, dashboardRes]) => {
+        if (cancelled) return;
+        setLesson(lessonRes.data);
+        setHearts(dashboardRes.data.stats.hearts);
+      })
+      .catch((err) => !cancelled && setError(getErrorMessage(err, 'Failed to load this lesson.')))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
     };
-    fetchQuestions();
   }, [lessonId]);
 
-  if (loading) {
-    return (
-      <div className="lesson-loading-view">
-        <div className="spinner"></div>
-        <p>Loading questions...</p>
-      </div>
-    );
-  }
+  const questions = lesson?.questions ?? [];
+  const question = questions[currentIndex];
+  const isLast = currentIndex === questions.length - 1;
+  const outOfHearts = feedback && !feedback.correct && hearts === 0;
 
-  if (error) {
-    return (
-      <div className="lesson-error-view">
-        <p>{error}</p>
-        <button onClick={() => navigate('/')} className="btn-primary">Back to Dashboard</button>
-      </div>
-    );
-  }
-
-  if (questions.length === 0) {
-    return (
-      <div className="lesson-error-view">
-        <p>No questions are configured for this lesson yet.</p>
-        <button onClick={() => navigate('/')} className="btn-primary">Back to Dashboard</button>
-      </div>
-    );
-  }
-
-  const currentQuestion = questions[currentIndex];
-
-  const handleSelectOption = (opt) => {
-    if (isChecked) return;
-    setSelectedOption(opt);
-  };
-
-  const handleCheck = () => {
-    if (isChecked) return;
-
-    let answerText = '';
-    if (currentQuestion.type === 'multiple-choice') {
-      answerText = selectedOption;
-    } else {
-      answerText = typedAnswer;
-    }
-
-    if (!answerText.trim()) {
-      alert('Please select or write an answer first.');
-      return;
-    }
-
-    // Client-side quick check for visual coloring
-    const isAnswerCorrect = currentQuestion.correctAnswer.trim().toLowerCase() === answerText.trim().toLowerCase();
-    setIsCorrect(isAnswerCorrect);
-    setIsChecked(true);
-
-    // Save answer payload for backend submission
-    setSubmittedAnswers(prev => [
-      ...prev,
-      { questionId: currentQuestion.id, answer: answerText }
-    ]);
-
-    if (!isAnswerCorrect) {
-      setLocalHearts(prev => Math.max(0, prev - 1));
-    }
-  };
-
-  const handleContinue = async () => {
-    // If user lost all hearts, abort lesson
-    if (localHearts <= 0 && !isCorrect) {
-      alert('No hearts left! Submitting lesson results now.');
-      submitFinalAnswers(true);
-      return;
-    }
-
-    // Go to next question or submit
-    if (currentIndex < questions.length - 1) {
-      setCurrentIndex(prev => prev + 1);
-      setSelectedOption('');
-      setTypedAnswer('');
-      setIsChecked(false);
-      setIsCorrect(false);
-    } else {
-      // Complete lesson
-      submitFinalAnswers(false);
-    }
-  };
-
-  const submitFinalAnswers = async (forceFail = false) => {
-    try {
+  const submitLesson = useCallback(
+    async (answers, failed) => {
       setSubmitting(true);
-      // Even if aborted, we submit progress to sync DB stats
-      const payloadAnswers = forceFail 
-        ? submittedAnswers 
-        : submittedAnswers; // could be partial or full
+      try {
+        const res = await userAPI.submitLesson(lessonId, answers);
+        navigate('/results', {
+          replace: true,
+          state: { lessonTitle: lesson.title, results: res.data, wasFailed: failed || !res.data.success },
+        });
+      } catch (err) {
+        setActionError(getErrorMessage(err, 'We could not save your progress. Please try again.'));
+        setSubmitting(false);
+      }
+    },
+    [lessonId, lesson, navigate]
+  );
 
-      const res = await userAPI.submitLesson(lessonId, payloadAnswers);
-      
-      // Navigate to results page passing data
-      navigate('/results', {
-        state: {
-          lessonTitle: lesson.title,
-          results: res.data,
-          wasFailed: forceFail || res.data.heartsLeft === 0 && res.data.correctCount < res.data.totalQuestions
-        }
-      });
+  const handleCheck = useCallback(async () => {
+    if (!answer.trim() || checking || feedback) return;
+    setChecking(true);
+    setActionError('');
+    try {
+      const res = await courseAPI.checkAnswer(lessonId, question.id, answer);
+      setFeedback(res.data);
+      setSubmittedAnswers((prev) => [...prev, { questionId: question.id, answer }]);
+      if (!res.data.correct) {
+        setHearts((prev) => Math.max(0, prev - 1));
+      }
     } catch (err) {
-      console.error(err);
-      alert('Error saving your progress. Navigating back to dashboard.');
-      navigate('/');
+      setActionError(getErrorMessage(err, 'Could not check your answer.'));
     } finally {
-      setSubmitting(false);
+      setChecking(false);
     }
-  };
+  }, [answer, checking, feedback, lessonId, question]);
 
-  // Progress percentage calculation
-  const progressPercent = Math.round((currentIndex / questions.length) * 100);
+  const handleContinue = useCallback(() => {
+    if (submitting) return;
+    if (outOfHearts) {
+      submitLesson(submittedAnswers, true);
+    } else if (isLast) {
+      submitLesson(submittedAnswers, false);
+    } else {
+      setCurrentIndex((prev) => prev + 1);
+      setAnswer('');
+      setFeedback(null);
+    }
+  }, [submitting, outOfHearts, isLast, submitLesson, submittedAnswers]);
+
+  // Keyboard: 1-9 picks an option, Enter checks / continues
+  useEffect(() => {
+    if (!question || confirmQuit) return undefined;
+    const onKeyDown = (event) => {
+      const typing = event.target.tagName === 'INPUT';
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        if (feedback) handleContinue();
+        else handleCheck();
+      } else if (!typing && !feedback && question.type === 'multiple-choice') {
+        const option = question.options?.[Number(event.key) - 1];
+        if (option) setAnswer(option);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [question, feedback, confirmQuit, handleCheck, handleContinue]);
+
+  if (loading) return <LoadingScreen message="Loading lesson…" />;
+
+  if (error || questions.length === 0) {
+    return (
+      <div className="focus-page">
+        <div className="focus-body">
+          {error ? (
+            <ErrorState message={error} />
+          ) : (
+            <EmptyState title="No questions yet">This lesson doesn't have any questions yet.</EmptyState>
+          )}
+          <div className="text-center">
+            <button type="button" className="btn btn-secondary" onClick={() => navigate('/')}>
+              Back to dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const progress = ((currentIndex + (feedback ? 1 : 0)) / questions.length) * 100;
+
+  const optionState = (option) => {
+    if (!feedback) return answer === option ? 'selected' : '';
+    if (option === feedback.correctAnswer) return 'correct';
+    if (option === answer) return 'wrong';
+    return 'dimmed';
+  };
 
   return (
-    <div className="lesson-page-container">
-      {/* Lesson Header */}
-      <header className="lesson-navbar">
-        <button onClick={() => {
-          if (window.confirm('Are you sure you want to quit? You will lose any unsaved progress.')) {
-            navigate('/');
-          }
-        }} className="btn-close-lesson">
-          ✕
+    <div className="focus-page">
+      <header className="focus-topbar">
+        <button type="button" className="icon-btn" onClick={() => setConfirmQuit(true)} aria-label="Quit lesson">
+          <X size={20} />
         </button>
-
-        <div className="lesson-progress-container">
-          <div className="lesson-progress-bar" style={{ width: `${progressPercent}%` }}></div>
-        </div>
-
-        <div className="lesson-hearts-indicator">
-          ❤️ <span className="hearts-count">{localHearts}</span>
-        </div>
+        <ProgressBar value={progress} label="Lesson progress" />
+        <span className="hearts-pill" aria-label={`${hearts} hearts left`}>
+          <Heart size={16} aria-hidden="true" /> {hearts}
+        </span>
       </header>
 
-      {/* Lesson Content Panel */}
-      <main className="lesson-body">
-        <div className="question-slide-box">
-          <span className="question-type-badge">
-            {currentQuestion.type === 'multiple-choice' ? 'Multiple Choice' : 'Fill in the Blank'}
+      <main className="focus-body">
+        <div className="question-card">
+          <span className="eyebrow">
+            {lesson.title} · Question {currentIndex + 1} of {questions.length}
           </span>
-          
-          <h2 className="question-text-heading">{currentQuestion.questionText}</h2>
+          <h1 className="question-text">{question.questionText}</h1>
 
-          {currentQuestion.type === 'multiple-choice' ? (
-            <div className="options-layout-grid">
-              {currentQuestion.options && currentQuestion.options.map((opt, index) => (
+          {question.type === 'multiple-choice' ? (
+            <div className="choice-list" role="radiogroup" aria-label="Answer options">
+              {question.options.map((option, index) => (
                 <button
-                  key={index}
-                  onClick={() => handleSelectOption(opt)}
-                  className={`option-choice-card ${selectedOption === opt ? 'selected' : ''} ${
-                    isChecked && opt === currentQuestion.correctAnswer ? 'correct-highlight' : ''
-                  } ${
-                    isChecked && selectedOption === opt && opt !== currentQuestion.correctAnswer ? 'wrong-highlight' : ''
-                  }`}
-                  disabled={isChecked}
+                  key={option}
+                  type="button"
+                  role="radio"
+                  aria-checked={answer === option}
+                  className={`choice ${optionState(option)}`}
+                  onClick={() => !feedback && setAnswer(option)}
+                  disabled={Boolean(feedback)}
                 >
-                  <span className="option-index">{index + 1}</span>
-                  <span className="option-label">{opt}</span>
+                  <span className="choice-key">{index + 1}</span>
+                  <span className="choice-label">{option}</span>
                 </button>
               ))}
             </div>
           ) : (
-            <div className="fill-blank-layout">
-              <input
-                type="text"
-                value={typedAnswer}
-                onChange={(e) => setTypedAnswer(e.target.value)}
-                placeholder="Type the translation here..."
-                disabled={isChecked}
-                className={`fill-blank-input ${
-                  isChecked && isCorrect ? 'correct-field' : ''
-                } ${
-                  isChecked && !isCorrect ? 'wrong-field' : ''
-                }`}
-                autoFocus
-              />
-            </div>
+            <input
+              type="text"
+              className={`input input-lg ${feedback ? (feedback.correct ? 'is-correct' : 'is-wrong') : ''}`}
+              value={answer}
+              onChange={(e) => setAnswer(e.target.value)}
+              placeholder="Type your answer"
+              disabled={Boolean(feedback)}
+              aria-label="Your answer"
+              autoFocus
+            />
           )}
         </div>
       </main>
 
-      {/* Bottom Feedback Bar */}
-      <footer className={`lesson-footer-bar ${
-        isChecked ? (isCorrect ? 'footer-correct' : 'footer-wrong') : ''
-      }`}>
-        <div className="footer-content-wrap">
-          {isChecked ? (
-            <div className="feedback-message-group">
-              {isCorrect ? (
-                <div className="feedback-correct-msg">
-                  <span className="feedback-icon">🎉</span>
-                  <div className="feedback-txt">
-                    <h3>Excellent! You are correct.</h3>
+      <footer className={`focus-footer ${feedback ? (feedback.correct ? 'is-correct' : 'is-wrong') : ''}`}>
+        <div className="focus-footer-inner">
+          <div className="feedback" aria-live="polite">
+            {actionError ? (
+              <p className="text-danger">{actionError}</p>
+            ) : feedback ? (
+              feedback.correct ? (
+                <>
+                  <CheckCircle2 size={28} aria-hidden="true" />
+                  <div>
+                    <strong>Correct!</strong>
                   </div>
-                </div>
+                </>
               ) : (
-                <div className="feedback-wrong-msg">
-                  <span className="feedback-icon">❌</span>
-                  <div className="feedback-txt">
-                    <h3>Incorrect answer</h3>
-                    <p>Correct solution: <strong>{currentQuestion.correctAnswer}</strong></p>
+                <>
+                  <XCircle size={28} aria-hidden="true" />
+                  <div>
+                    <strong>{outOfHearts ? 'Out of hearts' : 'Not quite'}</strong>
+                    <p>
+                      Correct answer: <b>{feedback.correctAnswer}</b>
+                    </p>
                   </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="footer-tip">
-              💡 Tip: Double check spelling before checking your answer!
-            </div>
-          )}
-
-          <div className="footer-actions">
-            {!isChecked ? (
-              <button onClick={handleCheck} className="btn-footer-check">
-                Check Answer
-              </button>
+                </>
+              )
             ) : (
-              <button onClick={handleContinue} className="btn-footer-continue" disabled={submitting}>
-                {submitting ? 'Saving...' : currentIndex === questions.length - 1 ? 'Finish Lesson' : 'Continue'}
-              </button>
+              <p className="text-muted text-sm">Tip: press Enter to check{question.type === 'multiple-choice' ? ', or 1–4 to pick' : ''}.</p>
             )}
           </div>
+
+          {feedback ? (
+            <button type="button" className="btn btn-primary btn-lg" onClick={handleContinue} disabled={submitting}>
+              {submitting && <Spinner size="sm" />}
+              {submitting ? 'Saving…' : outOfHearts ? 'See results' : isLast ? 'Finish lesson' : 'Continue'}
+            </button>
+          ) : (
+            <button type="button" className="btn btn-primary btn-lg" onClick={handleCheck} disabled={!answer.trim() || checking}>
+              {checking && <Spinner size="sm" />}
+              Check
+            </button>
+          )}
         </div>
       </footer>
+
+      <ConfirmDialog
+        open={confirmQuit}
+        title="Quit this lesson?"
+        confirmLabel="Quit lesson"
+        cancelLabel="Keep going"
+        tone="danger"
+        onConfirm={() => navigate('/')}
+        onCancel={() => setConfirmQuit(false)}
+      >
+        <p>Your answers in this lesson won't be saved.</p>
+      </ConfirmDialog>
     </div>
   );
 };

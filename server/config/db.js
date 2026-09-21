@@ -1,39 +1,38 @@
-const { Sequelize } = require('sequelize');
 const path = require('path');
+const { Sequelize } = require('sequelize');
+const { db } = require('./env');
 
-// Load environment variables
-require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+const define = {
+  timestamps: true,
+  underscored: true,
+};
 
 let sequelize;
 
-if (process.env.DB_DIALECT === 'sqlite') {
+if (db.url) {
+  // Hosted database connection string (e.g. Postgres on Neon/Render/Supabase, or MySQL)
+  sequelize = new Sequelize(db.url, {
+    logging: false,
+    define,
+    dialectOptions: db.ssl ? { ssl: { require: true, rejectUnauthorized: false } } : {},
+  });
+  console.log(`Sequelize configured with DATABASE_URL (${sequelize.getDialect()}).`);
+} else if (db.dialect === 'sqlite') {
   sequelize = new Sequelize({
     dialect: 'sqlite',
     storage: path.resolve(__dirname, '../database.sqlite'),
     logging: false,
-    define: {
-      timestamps: true,
-      underscored: true
-    }
+    define,
   });
   console.log('Sequelize configured with SQLite storage.');
 } else {
-  sequelize = new Sequelize(
-    process.env.DB_NAME || 'polylearn',
-    process.env.DB_USER || 'root',
-    process.env.DB_PASS || '',
-    {
-      host: process.env.DB_HOST || '127.0.0.1',
-      port: process.env.DB_PORT || 3306,
-      dialect: 'mysql',
-      logging: false,
-      define: {
-        timestamps: true,
-        underscored: true
-      }
-    }
-  );
+  sequelize = new Sequelize(db.name, db.user, db.pass, {
+    host: db.host,
+    port: db.port,
+    dialect: 'mysql',
+    logging: false,
+    define,
+  });
   console.log('Sequelize configured with MySQL client.');
 }
 

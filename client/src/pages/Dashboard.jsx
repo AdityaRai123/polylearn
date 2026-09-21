@@ -1,359 +1,293 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { userAPI, courseAPI } from '../services/api';
+import { useCallback, useEffect, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { BookOpen, CheckCircle2, ClipboardList, Flame, Heart, Star, Trophy } from 'lucide-react';
+import AppShell from '../components/AppShell';
+import { Alert, EmptyState, ErrorState, LanguageBadge, LoadingBlock, LoadingScreen } from '../components/ui';
+import { useAuth } from '../context/AuthContext';
+import { courseAPI, getErrorMessage, testAPI, userAPI } from '../services/api';
+
+const MAX_HEARTS = 5;
 
 const Dashboard = () => {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [languages, setLanguages] = useState([]);
-  const [selectedLanguage, setSelectedLanguage] = useState(null);
-  const [languageDetails, setLanguageDetails] = useState(null);
-  const [detailsLoading, setDetailsLoading] = useState(false);
-  const [refillMessage, setRefillMessage] = useState('');
-  const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+  const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const [data, setData] = useState(null);
+  const [languages, setLanguages] = useState([]);
+  const [pendingTests, setPendingTests] = useState([]);
+  const [selectedLanguageId, setSelectedLanguageId] = useState(location.state?.selectedLanguageId ?? null);
+  const [languageDetails, setLanguageDetails] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState(null);
+  const [refilling, setRefilling] = useState(false);
 
-  const fetchDashboardData = async () => {
+  const fetchDashboard = useCallback(async () => {
+    setLoading(true);
+    setError('');
     try {
-      setLoading(true);
-      const dashboardRes = await userAPI.getDashboard();
+      const [dashboardRes, languagesRes, testsRes] = await Promise.all([
+        userAPI.getDashboard(),
+        courseAPI.getLanguages(),
+        testAPI.list().catch(() => ({ data: [] })),
+      ]);
       setData(dashboardRes.data);
+      setLanguages(languagesRes.data);
+      setPendingTests(testsRes.data.filter((test) => !test.attempt));
 
-      const langRes = await courseAPI.getLanguages();
-      setLanguages(langRes.data);
-
-      // Check if a specific language is requested via routing state
-      const incomingLanguageId = location.state?.selectedLanguageId;
-      if (incomingLanguageId) {
-        setSelectedLanguage(incomingLanguageId);
-      } else if (dashboardRes.data.courseProgress && dashboardRes.data.courseProgress.length > 0) {
-        // Find language from enrolled list with active progress
-        const enrolled = dashboardRes.data.courseProgress[0];
-        setSelectedLanguage(enrolled.languageId);
-      } else if (langRes.data.length > 0) {
-        setSelectedLanguage(langRes.data[0].id);
-      }
+      // Default to the course with the most progress, otherwise the first course
+      setSelectedLanguageId((current) => {
+        if (current) return current;
+        const inProgress = [...dashboardRes.data.courseProgress].sort((a, b) => b.completedLessons - a.completedLessons)[0];
+        return inProgress?.completedLessons ? inProgress.languageId : languagesRes.data[0]?.id ?? null;
+      });
     } catch (err) {
-      console.error(err);
-      setError('Failed to fetch dashboard data. Please try again.');
+      setError(getErrorMessage(err, 'Failed to load your dashboard.'));
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchDashboardData();
   }, []);
 
-  const fetchLanguageDetails = async (langId) => {
-    if (!langId) return;
-    try {
-      setDetailsLoading(true);
-      const res = await courseAPI.getLanguage(langId);
-      setLanguageDetails(res.data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setDetailsLoading(false);
-    }
-  };
+  useEffect(() => {
+    fetchDashboard();
+  }, [fetchDashboard]);
 
   useEffect(() => {
-    if (selectedLanguage) {
-      fetchLanguageDetails(selectedLanguage);
-    }
-  }, [selectedLanguage]);
+    if (!selectedLanguageId) return undefined;
+    let cancelled = false;
+    setDetailsLoading(true);
+    courseAPI
+      .getLanguage(selectedLanguageId)
+      .then((res) => !cancelled && setLanguageDetails(res.data))
+      .catch(() => !cancelled && setLanguageDetails(null))
+      .finally(() => !cancelled && setDetailsLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLanguageId]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    navigate('/auth');
-  };
-
-  const handleDeleteAccount = async () => {
-    try {
-      await userAPI.deleteAccount();
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      navigate('/auth');
-    } catch (err) {
-      console.error(err);
-      alert(err.response?.data?.message || 'Failed to delete account.');
-    }
-  };
+  // Clear notices after a few seconds
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timer = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   const handleRefillHearts = async () => {
-    setRefillMessage('');
+    setRefilling(true);
     try {
       const res = await userAPI.refillHearts();
-      setRefillMessage(res.data.message);
-      // Refresh dashboard stats
-      const dashboardRes = await userAPI.getDashboard();
-      setData(prev => ({
-        ...prev,
-        stats: dashboardRes.data.stats
-      }));
-      setTimeout(() => setRefillMessage(''), 4000);
+      setData((prev) => ({ ...prev, stats: { ...prev.stats, hearts: res.data.hearts, xp: res.data.xp } }));
+      setNotice({ tone: 'success', text: res.data.message });
     } catch (err) {
-      setRefillMessage(err.response?.data?.message || 'Refill failed.');
-      setTimeout(() => setRefillMessage(''), 4000);
+      setNotice({ tone: 'error', text: getErrorMessage(err, 'Refill failed.') });
+    } finally {
+      setRefilling(false);
     }
   };
 
-  if (loading) {
+  const startLesson = (lessonId, isCompleted) => {
+    if (data.stats.hearts === 0 && !isCompleted) {
+      setNotice({ tone: 'warning', text: 'You are out of hearts. Refill them to start a new lesson.' });
+      return;
+    }
+    navigate(`/lesson/${lessonId}`);
+  };
+
+  if (loading && !data) {
     return (
-      <div className="loading-container">
-        <div className="spinner"></div>
-        <p>Loading your learning dashboard...</p>
-      </div>
+      <AppShell>
+        <LoadingScreen message="Loading your dashboard…" />
+      </AppShell>
     );
   }
 
   if (error) {
     return (
-      <div className="error-container">
-        <p className="error-msg">{error}</p>
-        <button onClick={fetchDashboardData} className="btn-primary">Retry</button>
-      </div>
+      <AppShell>
+        <ErrorState message={error} onRetry={fetchDashboard} />
+      </AppShell>
     );
   }
 
-  // Find if user completed lesson
-  const completedProgress = data?.courseProgress || [];
-  const currentLangProgress = completedProgress.find(p => p.languageId === selectedLanguage);
+  const { stats, courseProgress, completedLessonIds, leaderboard } = data;
+  const completed = new Set(completedLessonIds);
+  const progressFor = (languageId) => courseProgress.find((p) => p.languageId === languageId);
+  const firstName = user?.name?.split(' ')[0] || 'there';
 
   return (
-    <div className="dashboard-layout">
-      {/* LEFT SIDEBAR (Navigation) */}
-      <aside className="sidebar-left">
-        <div className="sidebar-brand">
-          <span className="brand-logo">🌍</span>
-          <h2>PolyLearn</h2>
-        </div>
-        <nav className="sidebar-nav">
-          <button className="nav-item active">
-            <span className="nav-icon">🏠</span> Learn
-          </button>
-          <button onClick={() => navigate('/languages')} className="nav-item">
-            <span className="nav-icon">🎓</span> Courses
-          </button>
-        </nav>
-        <div className="sidebar-footer">
-          <div className="user-profile-badge">
-            <span className="user-avatar">{user.name?.charAt(0).toUpperCase() || 'U'}</span>
-            <div className="user-info">
-              <span className="user-name">{user.name}</span>
-              <span className="user-role">Student</span>
-            </div>
-          </div>
-          <button onClick={handleLogout} className="btn-logout">
-            🚪 Log Out
-          </button>
-          {!showConfirmDelete ? (
-            <button onClick={() => setShowConfirmDelete(true)} className="btn-logout btn-delete" style={{ color: 'var(--error)', marginTop: '8px' }}>
-              🗑️ Delete Account
-            </button>
-          ) : (
-            <div className="confirm-delete-box" style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px', padding: '8px', background: 'var(--error-bg)', borderRadius: 'var(--radius-sm)' }}>
-              <span style={{ fontSize: '11px', color: 'var(--error)', fontWeight: 'bold', textAlign: 'center' }}>Delete Account?</span>
-              <button onClick={handleDeleteAccount} className="btn-delete-confirm" style={{ backgroundColor: 'var(--error)', color: 'white', padding: '6px', borderRadius: '4px', fontSize: '12px' }}>
-                Confirm
-              </button>
-              <button onClick={() => setShowConfirmDelete(false)} style={{ background: 'transparent', color: 'var(--text-muted)', padding: '4px', fontSize: '11px' }}>
-                Cancel
-              </button>
-            </div>
-          )}
-        </div>
-      </aside>
-
-      {/* MIDDLE PANEL (Language contents - Units & Lessons) */}
-      <main className="dashboard-main">
-        <header className="dashboard-header">
-          <div className="welcome-text">
-            <h1>Welcome back, {user.name}! 👋</h1>
-            <p>Select your active language course below to continue your progress.</p>
-          </div>
-          
-          <div className="language-selector-tabs">
-            {languages.map(lang => {
-              const prog = completedProgress.find(p => p.languageId === lang.id);
-              const percent = prog ? prog.percentComplete : 0;
-              return (
-                <button
-                  key={lang.id}
-                  className={`lang-tab-btn ${selectedLanguage === lang.id ? 'active' : ''}`}
-                  onClick={() => setSelectedLanguage(lang.id)}
-                >
-                  <span className="lang-tab-flag">{lang.code === 'es' ? '🇪🇸' : lang.code === 'fr' ? '🇫🇷' : lang.code === 'ja' ? '🇯🇵' : '🏳️'}</span>
-                  <div className="lang-tab-info">
-                    <span className="lang-tab-name">{lang.name}</span>
-                    <span className="lang-tab-percent">{percent}% completed</span>
-                  </div>
-                </button>
-              );
-            })}
+    <AppShell>
+      <div className="page page-wide">
+        <header className="page-header">
+          <div>
+            <h1>Welcome back, {firstName}</h1>
+            <p className="text-muted">Pick up where you left off, or try something new.</p>
           </div>
         </header>
 
-        {detailsLoading ? (
-          <div className="lessons-loading">
-            <div className="spinner-small"></div>
-            <p>Loading course modules...</p>
-          </div>
-        ) : languageDetails ? (
-          <div className="course-modules">
-            {languageDetails.units && languageDetails.units.length > 0 ? (
-              languageDetails.units.map((unit, uIdx) => {
-                // Calculate unit completion
-                const unitLessons = unit.lessons || [];
+        {notice && <Alert tone={notice.tone}>{notice.text}</Alert>}
+
+        <div className="dashboard-grid">
+          <div className="dashboard-main">
+            <div className="language-tabs" role="tablist" aria-label="Courses">
+              {languages.map((lang) => {
+                const percent = progressFor(lang.id)?.percentComplete ?? 0;
+                const active = selectedLanguageId === lang.id;
                 return (
-                  <div key={unit.id} className="unit-card">
-                    <div className="unit-header">
-                      <div className="unit-title-group">
-                        <span className="unit-badge">UNIT {unit.orderIndex}</span>
-                        <h2>{unit.title}</h2>
-                      </div>
-                    </div>
-
-                    <div className="lessons-list">
-                      {unitLessons.map((lesson) => {
-                        // Check if completed. We can verify against list of completed lessons
-                        // Since completed progress lesson ids are hard to track nested, 
-                        // let's pass down and map it properly.
-                        // Let's check:
-                        // Find this lesson in user progress returned by backend.
-                        // Since backend returns user progress in dashboard under completedProgress (implicit)
-                        // Wait! The backend returns list of course progress summary.
-                        // Wait! In `getDashboard`, we did not return the exact list of completed lesson IDs!
-                        // Let's modify the controller `getDashboard` to also return the exact completed lesson IDs list
-                        // so that we can easily render a checkmark or percent beside each lesson.
-                        // Let's see: user stats are returned, courseProgress is returned, leaderboard is returned.
-                        // Wait, we returned:
-                        // const completedProgress = await UserProgress.findAll({ where: { userId } });
-                        // Yes! But we only mapped it to courseProgress. Let's see if we should return the raw completedLessonIds list.
-                        // Actually, we can return the completed progress lessonIds in the response too! Let's check `getDashboard` in `userController.js`.
-                        // Yes! In `getDashboard` we wrote:
-                        // const completedLessonIds = new Set(completedProgress.map(p => p.lessonId));
-                        // We did not put `completedLessonIds` directly in the json response. We can easily edit `getDashboard` to include `completedLessonIds: Array.from(completedLessonIds)`.
-                        // But wait! Even without it, we can fetch all lesson records, and let the backend return the progress database records, or we can check the completedLessons count.
-                        // Wait, let's look at `userController.js` and modify it later to return `completedLessonIds`. That would make it extremely easy.
-                        // Wait, does the dashboard currently have any other way? We can just edit `userController.js` to return `completedLessonIds`. It will take a few seconds and make the UI perfect!
-                        // Let's assume the backend will return `completedLessonIds: Array.from(completedLessonIds)`.
-                        // Let's write the code under that assumption. If a lesson ID is in `data.completedLessonIds`, we render it as Completed!
-                        const isCompleted = data.completedLessonIds?.includes(lesson.id);
-
-                        return (
-                          <div key={lesson.id} className={`lesson-node-card ${isCompleted ? 'completed' : ''}`}>
-                            <div className="lesson-node-info">
-                              <div className="lesson-icon-wrapper">
-                                {isCompleted ? '✅' : '📖'}
-                              </div>
-                              <div className="lesson-text">
-                                <h3>{lesson.title}</h3>
-                                <p>{isCompleted ? 'Review this lesson to earn extra XP' : 'Start lesson and test your knowledge'}</p>
-                              </div>
-                            </div>
-                            <button
-                              onClick={() => {
-                                if (data.stats.hearts === 0 && !isCompleted) {
-                                  setRefillMessage('You have 0 hearts! Please refill hearts in the sidebar to start new lessons.');
-                                  return;
-                                }
-                                navigate(`/lesson/${lesson.id}`);
-                              }}
-                              className={`btn-lesson-action ${isCompleted ? 'btn-secondary' : 'btn-primary'}`}
-                            >
-                              {isCompleted ? 'Review' : 'Start'}
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  <button
+                    key={lang.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    className={`language-tab ${active ? 'active' : ''}`}
+                    onClick={() => setSelectedLanguageId(lang.id)}
+                  >
+                    <LanguageBadge code={lang.code} />
+                    <span className="language-tab-text">
+                      <strong>{lang.name}</strong>
+                      <small>{percent}% complete</small>
+                    </span>
+                  </button>
                 );
-              })
+              })}
+            </div>
+
+            {detailsLoading ? (
+              <LoadingBlock message="Loading lessons…" />
+            ) : !languageDetails ? (
+              <EmptyState icon={BookOpen} title="Choose a course">Select a language above to see its lessons.</EmptyState>
+            ) : languageDetails.units.length === 0 ? (
+              <EmptyState icon={BookOpen} title="No lessons yet">This course doesn't have any units yet.</EmptyState>
             ) : (
-              <p className="no-content">No units available for this language yet.</p>
+              <div className="unit-list">
+                {languageDetails.units.map((unit) => {
+                  const doneCount = unit.lessons.filter((lesson) => completed.has(lesson.id)).length;
+                  return (
+                    <section key={unit.id} className="card unit-card">
+                      <header className="unit-header">
+                        <div>
+                          <span className="eyebrow">Unit {unit.orderIndex}</span>
+                          <h2>{unit.title}</h2>
+                        </div>
+                        <span className="text-muted text-sm">
+                          {doneCount}/{unit.lessons.length} done
+                        </span>
+                      </header>
+                      <ul className="lesson-list">
+                        {unit.lessons.map((lesson) => {
+                          const isCompleted = completed.has(lesson.id);
+                          return (
+                            <li key={lesson.id} className={`lesson-row ${isCompleted ? 'completed' : ''}`}>
+                              <span className="lesson-row-icon" aria-hidden="true">
+                                {isCompleted ? <CheckCircle2 size={20} /> : <BookOpen size={20} />}
+                              </span>
+                              <div className="lesson-row-text">
+                                <h3>{lesson.title}</h3>
+                                <p>{isCompleted ? 'Completed — review it for extra XP' : 'Not started yet'}</p>
+                              </div>
+                              <button
+                                type="button"
+                                className={`btn btn-sm ${isCompleted ? 'btn-secondary' : 'btn-primary'}`}
+                                onClick={() => startLesson(lesson.id, isCompleted)}
+                              >
+                                {isCompleted ? 'Review' : 'Start'}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </section>
+                  );
+                })}
+              </div>
             )}
           </div>
-        ) : (
-          <p className="no-content">Please select a language course.</p>
-        )}
-      </main>
 
-      {/* RIGHT SIDEBAR (Stats & Leaderboard) */}
-      <aside className="sidebar-right">
-        {/* User Stats Panel */}
-        <div className="stats-widget">
-          <h3>Your Progress Stats</h3>
-          <div className="stats-grid">
-            <div className="stat-card streak">
-              <span className="stat-icon">🔥</span>
-              <div className="stat-values">
-                <span className="stat-num">{data.stats.streakCount}</span>
-                <span className="stat-label">Day Streak</span>
-              </div>
-            </div>
-            
-            <div className="stat-card xp">
-              <span className="stat-icon">⭐</span>
-              <div className="stat-values">
-                <span className="stat-num">{data.stats.xp}</span>
-                <span className="stat-label">Total XP</span>
-              </div>
-            </div>
-
-            <div className="stat-card hearts">
-              <span className="stat-icon">❤️</span>
-              <div className="stat-values">
-                <span className="stat-num">{data.stats.hearts} / 5</span>
-                <span className="stat-label">Hearts Left</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="hearts-refill-panel">
-            <button 
-              onClick={handleRefillHearts} 
-              className="btn-refill-hearts"
-              disabled={data.stats.hearts >= 5}
-            >
-              ❤️ Refill Hearts (Costs 50 XP)
-            </button>
-            {refillMessage && <p className="refill-message">{refillMessage}</p>}
-          </div>
-        </div>
-
-        {/* Leaderboard Panel */}
-        <div className="leaderboard-widget">
-          <h3>Global Leaderboard</h3>
-          <div className="leaderboard-list">
-            {data.leaderboard && data.leaderboard.length > 0 ? (
-              data.leaderboard.map((player) => (
-                <div 
-                  key={player.userId} 
-                  className={`leaderboard-item ${player.userId === user.id ? 'current-user' : ''}`}
-                >
-                  <span className="player-rank">#{player.rank}</span>
-                  <span className="player-name">{player.name}</span>
-                  <div className="player-xp-details">
-                    <span className="player-xp">{player.xp} XP</span>
-                    <span className="player-streak">🔥 {player.streak}</span>
-                  </div>
+          <aside className="dashboard-side">
+            <section className="card">
+              <h2 className="card-title">Your stats</h2>
+              <div className="stat-grid">
+                <div className="stat-tile tone-gold">
+                  <Flame size={20} aria-hidden="true" />
+                  <strong>{stats.streakCount}</strong>
+                  <span>Day streak</span>
                 </div>
-              ))
-            ) : (
-              <p className="no-content">No active users yet.</p>
-            )}
-          </div>
+                <div className="stat-tile tone-brand">
+                  <Star size={20} aria-hidden="true" />
+                  <strong>{stats.xp}</strong>
+                  <span>Total XP</span>
+                </div>
+                <div className="stat-tile tone-heart">
+                  <Heart size={20} aria-hidden="true" />
+                  <strong>
+                    {stats.hearts}/{MAX_HEARTS}
+                  </strong>
+                  <span>Hearts</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                onClick={handleRefillHearts}
+                disabled={stats.hearts >= MAX_HEARTS || refilling}
+              >
+                <Heart size={16} aria-hidden="true" />
+                {stats.hearts >= MAX_HEARTS ? 'Hearts are full' : 'Refill hearts (50 XP)'}
+              </button>
+            </section>
+
+            <section className="card">
+              <div className="card-title-row">
+                <h2 className="card-title">Tests</h2>
+                <Link to="/tests" className="link">View all</Link>
+              </div>
+              {pendingTests.length === 0 ? (
+                <p className="text-muted text-sm">You're all caught up — no tests waiting.</p>
+              ) : (
+                <ul className="mini-list">
+                  {pendingTests.slice(0, 3).map((test) => (
+                    <li key={test.id}>
+                      <ClipboardList size={18} aria-hidden="true" className="text-brand" />
+                      <div className="mini-list-text">
+                        <strong>{test.title}</strong>
+                        <small>
+                          {test.questionCount} questions · {test.teacherName}
+                        </small>
+                      </div>
+                      <Link to={`/tests/${test.id}`} className="btn btn-primary btn-sm">Start</Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="card">
+              <h2 className="card-title">
+                <Trophy size={18} aria-hidden="true" className="text-gold" /> Leaderboard
+              </h2>
+              {leaderboard.length === 0 ? (
+                <p className="text-muted text-sm">No learners yet.</p>
+              ) : (
+                <ol className="leaderboard">
+                  {leaderboard.map((player) => (
+                    <li key={player.userId} className={player.userId === user?.id ? 'is-me' : ''}>
+                      <span className={`rank rank-${player.rank}`}>{player.rank}</span>
+                      <span className="leaderboard-name">
+                        {player.name}
+                        {player.userId === user?.id && <small> (you)</small>}
+                      </span>
+                      <span className="leaderboard-xp">{player.xp} XP</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
+          </aside>
         </div>
-      </aside>
-    </div>
+      </div>
+    </AppShell>
   );
 };
 

@@ -1,42 +1,13 @@
 const bcrypt = require('bcryptjs');
-const mysql = require('mysql2/promise');
-const path = require('path');
-const { sequelize, User, UserStats, UserProgress, Language, Unit, Lesson, Question } = require('../models');
+const {
+  User, UserStats, UserProgress, Language, Unit, Lesson, Question, Test, TestQuestion, TestAttempt
+} = require('../models');
+const { prepareDatabase } = require('../config/bootstrap');
+const { gradeTest } = require('../utils/grading');
 
-// Load env vars
-require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
-
-const seedDatabase = async (forceSync = true) => {
+// Inserts demo languages, lessons, users and a sample teacher test into an empty database
+const seedContent = async () => {
   try {
-    if (process.env.DB_DIALECT !== 'sqlite') {
-      console.log('Ensuring database exists...');
-      const connection = await mysql.createConnection({
-        host: process.env.DB_HOST || '127.0.0.1',
-        port: process.env.DB_PORT || 3306,
-        user: process.env.DB_USER || 'root',
-        password: process.env.DB_PASS || '',
-      });
-      await connection.query(`CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME || 'polylearn'}\`;`);
-      await connection.end();
-      console.log('Database check complete.');
-    } else {
-      console.log('Using SQLite. Skipping MySQL database existence check.');
-    }
-
-    console.log('Connecting to database for seeding...');
-    await sequelize.authenticate();
-    console.log('Database connected.');
-
-    if (forceSync) {
-      // Force sync drops all tables and recreates them
-      console.log('Resetting tables...');
-      await sequelize.sync({ force: true });
-      console.log('Tables reset.');
-    } else {
-      await sequelize.sync({ alter: false });
-    }
-
     // 1. Seed Languages
     console.log('Seeding languages...');
     const spanish = await Language.create({ name: 'Spanish', code: 'es' });
@@ -283,6 +254,79 @@ const seedDatabase = async (forceSync = true) => {
     await UserProgress.create({ userId: secondUser.id, lessonId: esLesson1.id, score: 100 });
     await UserProgress.create({ userId: secondUser.id, lessonId: esLesson2.id, score: 90 });
 
+    // 5. Seed a demo teacher with a published test
+    console.log('Seeding teacher and sample test...');
+    const teacherHash = await bcrypt.hash('teacher123', salt);
+    const teacher = await User.create({
+      name: 'Ms. Rivera',
+      email: 'teacher@polylearn.com',
+      passwordHash: teacherHash,
+      role: 'teacher'
+    });
+
+    const spanishQuiz = await Test.create({
+      teacherId: teacher.id,
+      title: 'Spanish Basics Quiz',
+      description: 'Greetings, pronouns and a few everyday verbs. You get one attempt, so take your time.',
+      isPublished: true
+    });
+
+    const quizQuestions = await TestQuestion.bulkCreate([
+      {
+        testId: spanishQuiz.id,
+        orderIndex: 0,
+        type: 'multiple-choice',
+        questionText: 'Which phrase means "Good night"?',
+        options: ['Buenos días', 'Buenas tardes', 'Buenas noches', 'Hola'],
+        correctAnswers: ['Buenas noches'],
+        points: 1
+      },
+      {
+        testId: spanishQuiz.id,
+        orderIndex: 1,
+        type: 'multiple-choice',
+        questionText: 'What is the Spanish word for "We"?',
+        options: ['Ellos', 'Nosotros', 'Ustedes', 'Yo'],
+        correctAnswers: ['Nosotros'],
+        points: 1
+      },
+      {
+        testId: spanishQuiz.id,
+        orderIndex: 2,
+        type: 'short-answer',
+        questionText: 'Translate "Thank you very much" into Spanish.',
+        options: null,
+        correctAnswers: ['Muchas gracias'],
+        points: 2
+      },
+      {
+        testId: spanishQuiz.id,
+        orderIndex: 3,
+        type: 'short-answer',
+        questionText: 'Translate the verb "to live" into Spanish.',
+        options: null,
+        correctAnswers: ['Vivir'],
+        points: 2
+      }
+    ], { returning: true });
+
+    await Test.create({
+      teacherId: teacher.id,
+      title: 'French Greetings (draft)',
+      description: 'Work in progress — students cannot see drafts until you publish them.',
+      isPublished: false
+    });
+
+    // Carlos has already taken the Spanish quiz, so the teacher's results page has data
+    const carlosAnswers = new Map([
+      [quizQuestions[0].id, 'Buenas noches'],
+      [quizQuestions[1].id, 'Ellos'],
+      [quizQuestions[2].id, 'muchas gracias'],
+      [quizQuestions[3].id, 'Vivir']
+    ]);
+    const { review, ...summary } = gradeTest(quizQuestions, carlosAnswers);
+    await TestAttempt.create({ testId: spanishQuiz.id, userId: secondUser.id, ...summary, review });
+
     console.log('Seeding completed successfully!');
   } catch (err) {
     console.error('Seeding failed:', err);
@@ -290,12 +334,19 @@ const seedDatabase = async (forceSync = true) => {
   }
 };
 
+// `npm run seed`: drop every table, recreate them and insert the demo content
+const seedDatabase = async () => {
+  await prepareDatabase({ reset: true });
+  await seedContent();
+};
+
+// Called on server start, after the database has been prepared
 const autoSeedIfEmpty = async () => {
   try {
     const count = await Language.count();
     if (count === 0) {
       console.log('Database is empty. Running auto-seeder for initial content...');
-      await seedDatabase(false);
+      await seedContent();
       console.log('Auto-seeding completed.');
     }
   } catch (err) {
@@ -304,7 +355,7 @@ const autoSeedIfEmpty = async () => {
 };
 
 if (require.main === module) {
-  seedDatabase(true)
+  seedDatabase()
     .then(() => process.exit(0))
     .catch(() => process.exit(1));
 }

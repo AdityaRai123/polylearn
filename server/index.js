@@ -1,37 +1,32 @@
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
-const mysql = require('mysql2/promise');
-const { sequelize } = require('./models');
+const env = require('./config/env');
+const { prepareDatabase } = require('./config/bootstrap');
 const { autoSeedIfEmpty } = require('./seed/seed');
+const { errorHandler } = require('./utils/http');
 
-// Import routes
 const authRoutes = require('./routes/authRoutes');
 const courseRoutes = require('./routes/courseRoutes');
 const userRoutes = require('./routes/userRoutes');
-
-// Load environment variables
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
-require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+const testRoutes = require('./routes/testRoutes');
+const teacherRoutes = require('./routes/teacherRoutes');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+app.disable('x-powered-by');
 
-// Enable CORS (Allow configured CLIENT_URL or all origins)
-const corsOptions = {
-  origin: process.env.CLIENT_URL || '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+// Allow the configured frontend origin(s), or any origin when CLIENT_URL is not set
+app.use(cors({
+  origin: env.clientUrls.length > 0 ? env.clientUrls : '*',
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-};
-app.use(cors(corsOptions));
+}));
 
-// Body parser
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb' }));
 
-// Mount routes
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/tests', testRoutes);
+app.use('/api/teacher', teacherRoutes);
 app.use('/api', courseRoutes);
 
 // Health check endpoint
@@ -44,44 +39,26 @@ app.get('/', (req, res) => {
   res.status(200).send('PolyLearn API Server is Live!');
 });
 
-// Database Synchronization and server start
+app.use('/api', (req, res) => {
+  res.status(404).json({ message: 'API route not found.' });
+});
+
+app.use(errorHandler);
+
 const startServer = async () => {
   try {
-    if (process.env.DB_DIALECT !== 'sqlite') {
-      // Ensure database exists before connecting via Sequelize
-      const connection = await mysql.createConnection({
-        host: process.env.DB_HOST || '127.0.0.1',
-        port: process.env.DB_PORT || 3306,
-        user: process.env.DB_USER || 'root',
-        password: process.env.DB_PASS || '',
-      });
-      await connection.query(`CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME || 'polylearn'}\`;`);
-      await connection.end();
-    }
-
-    // Sync database (creates tables if they don't exist)
-    await sequelize.authenticate();
-    const dialect = process.env.DB_DIALECT || 'mysql';
-    console.log(`Database connection established successfully (${dialect}).`);
-
-    await sequelize.sync({ alter: false }); 
-    console.log('Database models synced.');
-
+    await prepareDatabase();
     // Auto-seed initial content if database is fresh/empty
     await autoSeedIfEmpty();
-
-    app.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
-    });
   } catch (err) {
     console.error('Unable to connect to the database:', err);
-    console.log('Make sure database configuration in .env is correct.');
-    // Start server anyway so the service remains active on Render
-    app.listen(PORT, () => {
-      console.log(`Server started on port ${PORT} (Database offline)`);
-    });
+    console.log('Make sure the database configuration in .env is correct.');
+    // Start the server anyway so the service remains active on Render
   }
+
+  app.listen(env.port, () => {
+    console.log(`Server is running on port ${env.port}`);
+  });
 };
 
 startServer();
-

@@ -1,15 +1,28 @@
 services:
   - type: web
     name: polylearn-backend
-    env: node
+    runtime: node
     plan: free
     rootDir: server
     buildCommand: npm install
     startCommand: npm start
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DB_DIALECT
-        value: sqlite
       - key: JWT_SECRET
         generateValue: true
+      # Your frontend URL, e.g. https://polylearn.vercel.app
+      - key: CLIENT_URL
+        sync: false
+      # Code teachers enter when signing up (leave unset to disable teacher sign-up)
+      - key: TEACHER_INVITE_CODE
+        sync: false
+      # Persistent database, e.g. a free Neon / Render Postgres URL.
+      # Without it the server falls back to SQLite, which Render wipes on every restart.
+      - key: DATABASE_URL
+        sync: false
+      - key: DB_SSL
+        value: "true"
+      - key: DB_DIALECT
+        value: sqlite

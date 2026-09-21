@@ -1,116 +1,96 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const { User, UserStats } = require('../models');
-const path = require('path');
+const { User, UserStats, sequelize } = require('../models');
+const { jwtSecret, teacherInviteCode } = require('../config/env');
+const { HttpError } = require('../utils/http');
 
-require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+const toPublicUser = (user) => ({
+  id: user.id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+});
 
-const JWT_SECRET = process.env.JWT_SECRET || 'polylearn_jwt_secret_key_change_me_in_production';
+const signToken = (user) => jwt.sign({ id: user.id, role: user.role }, jwtSecret, { expiresIn: '30d' });
 
-exports.signup = async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 
-    // Simple validation
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: 'All fields (name, email, password) are required.' });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({ message: 'Password must be at least 6 characters long.' });
-    }
-
-    // Check if user already exists
-    const existingUser = await User.findOne({ where: { email } });
-    if (existingUser) {
-      return res.status(400).json({ message: 'A user with this email already exists.' });
-    }
-
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(password, salt);
-
-    // Create User
-    const user = await User.create({
-      name,
-      email,
-      passwordHash
-    });
-
-    // Initialize User Stats (XP = 0, Streak = 0, Hearts = 5)
-    await UserStats.create({
-      userId: user.id,
-      xp: 0,
-      streakCount: 0,
-      lastActiveDate: null,
-      hearts: 5
-    });
-
-    // Generate JWT
-    const token = jwt.sign(
-      { id: user.id, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '30d' } // Expires in 30 days
-    );
-
-    res.status(201).json({
-      message: 'Signup successful!',
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email
-      }
-    });
-
-  } catch (err) {
-    console.error('Signup error:', err);
-    res.status(500).json({ message: 'An error occurred during signup.' });
-  }
+const isValidTeacherCode = (code) => {
+  if (!teacherInviteCode) return false;
+  const given = Buffer.from(String(code || '').trim());
+  const expected = Buffer.from(teacherInviteCode);
+  return given.length === expected.length && crypto.timingSafeEqual(given, expected);
 };
 
-exports.login = async (req, res) => {
-  try {
-    const { email, password } = req.body;
+// GET /api/auth/config
+exports.getConfig = (req, res) => {
+  res.json({ teacherSignupEnabled: Boolean(teacherInviteCode) });
+};
 
-    if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required.' });
-    }
+// POST /api/auth/signup
+exports.signup = async (req, res) => {
+  const name = String(req.body.name || '').trim();
+  const email = normalizeEmail(req.body.email);
+  const password = String(req.body.password || '');
+  const role = req.body.role === 'teacher' ? 'teacher' : 'student';
 
-    // Check if user exists
-    const user = await User.findOne({ where: { email } });
-    if (!user) {
-      return res.status(401).json({ message: 'Invalid email or password.' });
-    }
-
-    // Compare passwords
-    const isMatch = await bcrypt.compare(password, user.passwordHash);
-    if (!isMatch) {
-      return res.status(401).json({ message: 'Invalid email or password.' });
-    }
-
-    // Reset hearts to 5 if needed (Daily heart refill logic or just keep it simple. Let's do it on dashboard load or when they need it)
-
-    // Generate JWT
-    const token = jwt.sign(
-      { id: user.id, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '30d' }
-    );
-
-    res.status(200).json({
-      message: 'Login successful!',
-      token,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email
-      }
-    });
-
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ message: 'An error occurred during login.' });
+  if (!name || !email || !password) {
+    throw new HttpError(400, 'Name, email and password are required.');
   }
+  if (name.length > 80) {
+    throw new HttpError(400, 'Name must be 80 characters or fewer.');
+  }
+  if (password.length < 6) {
+    throw new HttpError(400, 'Password must be at least 6 characters long.');
+  }
+  if (role === 'teacher' && !isValidTeacherCode(req.body.teacherCode)) {
+    throw new HttpError(
+      403,
+      teacherInviteCode
+        ? 'That teacher access code is not valid.'
+        : 'Teacher sign-up is turned off on this server. Ask your administrator for a teacher account.'
+    );
+  }
+
+  const existingUser = await User.findOne({ where: { email } });
+  if (existingUser) {
+    throw new HttpError(409, 'An account with this email already exists.');
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+
+  const user = await sequelize.transaction(async (transaction) => {
+    const created = await User.create({ name, email, passwordHash, role }, { transaction });
+    // XP, streaks and hearts only apply to students
+    if (role === 'student') {
+      await UserStats.create({ userId: created.id }, { transaction });
+    }
+    return created;
+  });
+
+  res.status(201).json({ token: signToken(user), user: toPublicUser(user) });
+};
+
+// POST /api/auth/login
+exports.login = async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const password = String(req.body.password || '');
+
+  if (!email || !password) {
+    throw new HttpError(400, 'Email and password are required.');
+  }
+
+  const user = await User.findOne({ where: { email } });
+  const isMatch = user && (await bcrypt.compare(password, user.passwordHash));
+  if (!isMatch) {
+    throw new HttpError(401, 'Invalid email or password.');
+  }
+
+  res.json({ token: signToken(user), user: toPublicUser(user) });
+};
+
+// GET /api/auth/me (Protected)
+exports.me = (req, res) => {
+  res.json({ user: toPublicUser(req.user) });
 };
