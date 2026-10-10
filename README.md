@@ -1,7 +1,7 @@
 # PolyLearn 🌍
 
 A multi-language learning web app (Duolingo-style) with teacher-set tests. React (Vite) frontend, Express + Sequelize API, MySQL / Postgres / SQLite database.
-
+Live hosted at https://poly-learn.netlify.app/auth
 ---
 
 ## Features
